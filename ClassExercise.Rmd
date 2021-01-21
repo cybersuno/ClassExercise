@@ -1,0 +1,145 @@
+---
+title: "Class Exercise"
+author: "cybersuno"
+date: "16/1/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+```
+
+## Introduction
+For this article we have used data from [http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har](Human Activity Recognition). Publication [http://groupware.les.inf.puc-rio.br/work.jsf?p1=10335](here) by Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H.
+
+The data collected through several devices (Jawbone Up, Nike FuelBand, and Fitbit) is related with some kind of activity.
+The goal of this article is analyzing data and building a prediction model to the class of movement.
+
+
+## Seed and libraries
+To enable reproductibility, we set a value to the seed.
+In this chunk of code, we include the libraries to use:
+*  _caret_ for machine learning
+*  _parallel_ and _doParallel_ to enable multicore processing)
+```{r set_seed_libraries}
+library(caret)
+library(parallel)
+library(doParallel)
+set.seed(1567)
+```
+
+## Data load
+Downloading and reading of the data. If csv files does not exist, they are downloaded from its source. Then we load the data. We have noticed some data has special phrases for nulls. Those ones disable the authomatic conversion to number, so some usual values are considered to be treated NA.
+```{r file_load}
+if (!file.exists("pml-training.csv"))
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",destfile="pml-training.csv")
+
+if (!file.exists("pml-testing.csv"))
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",destfile="pml-testing.csv")
+
+training<-read.csv("pml-training.csv",na.strings=c("","NA","#DIV/0!"))
+testing<-read.csv("pml-testing.csv",na.strings=c("","NA","#DIV/0!"))
+
+training$classe<-as.factor(training$classe)
+
+print(dim(training))
+print(dim(testing))
+```
+
+## Exploratory
+Some exploratory data shows that many variables have no information (many NA values). So one of the tasks to perform is select only variables with relevant amount of data. For this to be possible, we select only columns with a threshold of 75% of filled values, so columns with 25% of NA values are discarded.
+
+Additional information on the dataset is the presence of non relevant variables related with the rownumber, person, etc. Those are the first seven columns. We will eliminate them too.
+```{r exploratory}
+#summary(training)
+#str(training)
+#head(training)
+qplot(training$classe)
+
+#extract columns with NA values
+selColumns<-(colSums(!is.na(training))>(nrow(training)*0.75))
+cleanedTraining<-training[,selColumns]
+cleanedTraining<-cleanedTraining[,-c(1:7)]
+cleanedTesting<-testing[,selColumns]
+cleanedTesting<-cleanedTesting[,-c(1:17)]
+
+```
+
+## Models
+We are going to use cross validation to make a new subsetting of the training data and test models.
+The split will be with an 70% of the rows for subtraining, using the rest to validate.
+Then we will compared a _decission tree_ model with a _random forest_ using a commonly prepared dataset.
+
+First of all, we split the data:
+```{r cross-validation}
+
+cvIndex<-createDataPartition(cleanedTraining$classe,p=0.7,list=FALSE)
+cvTrain<-cleanedTraining[cvIndex,]
+cvValid<-cleanedTraining[-cvIndex,]
+```
+
+
+For preprocessing, we will apply a Near Zero Variance to supress variables heavily concentrated on values. Most of the data have a high accuracy, so maybe some variables with low variance have a default value or similar.
+```{r preprocess}
+prenzv<-preProcess(cvTrain,method="nzv")
+
+cvTrainNzv<-predict(prenzv,cvTrain)
+cvValidNzv<-predict(prenzv,cvValid)
+```
+
+For the models to run, we activate the parallel processing:
+```{r parallel_on}
+
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+```
+
+### First model: decission tree
+First execution is model for decission tree. We prepare the model to have five folds and allowing parallelization.
+```{r decission_tree}
+modCtrlRP <- trainControl(method = "cv",
+number = 5,
+allowParallel = TRUE)
+
+modelDT<-train(classe~.,method="rpart",data=cvTrainNzv,trControl=modCtrlRP)
+modelDT
+```
+
+
+The application of this model to the validation throws a poor result (approx. 50%)
+```{r predict_decission_tree}
+predDT<-predict(modelDT,cvValidNzv)
+confusionMatrix(predDT,as.factor(cvValidNzv$classe))
+```
+
+### Second model: random forest
+We have a similar preparation, but applying the random forest algorithm.
+```{r random_forest}
+modCtrlRF <- trainControl(method = "cv",
+number = 5,
+allowParallel = TRUE)
+
+modelRF<-train(classe~.,method="rf",data=cvTrainNzv,trControl=modCtrlRF)
+modelRF
+```
+
+In this case, the result for the random forest model is by far much better, being very near of 100% on the validation set.
+
+```{r}
+predRF<-predict(modelRF,cvValidNzv)
+confusionMatrix(predRF,as.factor(cvValidNzv$classe))
+```
+
+
+```{r parallel_off}
+stopCluster(cluster)
+registerDoSEQ()
+```
+
+## Model selection
+According to the results, the Random Forest model have a much better accuracy. We apply the method to the validation set:
+
+```{r model_applied}
+rltTest<-predict(modelRF,testing)
+rltTest
+```
